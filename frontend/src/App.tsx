@@ -1056,6 +1056,26 @@ function App() {
     setShowAdvisory(false);
   };
 
+  const useAdvisoryMode = () => {
+    if (!advisoryStatus?.authorized) {
+      setError(
+        "Chế độ Advisor chỉ có thể được chọn sau khi đủ ba điều kiện pháp lý."
+      );
+      return;
+    }
+    setRequest((current) => ({
+      ...current,
+      requested_mode: "LICENSED_ADVISORY",
+      legal_evidence: {
+        licensed_entity_verified: advisoryStatus.licensed_entity_verified,
+        advisory_contract_verified: advisoryStatus.advisory_contract_verified,
+        responsible_advisor_verified:
+          advisoryStatus.responsible_advisor_verified
+      }
+    }));
+    setShowAdvisory(false);
+  };
+
   const saveAdvisoryStatus = async () => {
     setAdvisorySaving(true);
     setError("");
@@ -1673,17 +1693,27 @@ function App() {
             {health ? ` · ${health.data_sources_connected}/${health.data_sources_total}` : ""}
           </button>
           <button
-            className={`mode-pill mode-control ${
+            className={`mode-control ${
               request.requested_mode === "LICENSED_ADVISORY"
                 ? "advisor-active"
-                : ""
+                : "research-active"
             }`}
             onClick={openAdvisory}
             title="Chọn chế độ phát hành kết quả"
+            aria-label={`Chế độ hiện tại: ${
+              request.requested_mode === "LICENSED_ADVISORY"
+                ? "Advisor được cấp phép"
+                : "Nghiên cứu và giáo dục"
+            }. Nhấn để thay đổi.`}
           >
-            {request.requested_mode === "LICENSED_ADVISORY"
-              ? "ADVISOR · LICENSED"
-              : "RESEARCH · EDUCATION"}
+            <span>CHẾ ĐỘ HIỆN TẠI</span>
+            <strong>
+              <i />
+              {request.requested_mode === "LICENSED_ADVISORY"
+                ? "ADVISOR · ĐƯỢC CẤP PHÉP"
+                : "RESEARCH · GIÁO DỤC"}
+            </strong>
+            <em>Đổi</em>
           </button>
           <button className="header-button mobile-optional" onClick={openDepositComparison}>
             Lãi suất
@@ -1692,8 +1722,13 @@ function App() {
             Audit
           </button>
           {authUser && (
-            <button className="header-button" onClick={logout} title={authUser.email}>
-              {authUser.display_name} · Thoát
+            <button
+              className="header-button user-session-button"
+              onClick={logout}
+              title={`${authUser.display_name} · ${authUser.email}`}
+            >
+              <span>{authUser.display_name}</span>
+              <b>Thoát</b>
             </button>
           )}
         </div>
@@ -1798,6 +1833,44 @@ function App() {
               <span className="pulse" />
               {chatLoading ? "Đang diễn giải…" : "Sẵn sàng đối thoại"}
             </div>
+          </div>
+
+          <div
+            className={`mode-context-banner ${
+              request.requested_mode === "LICENSED_ADVISORY"
+                ? "advisor"
+                : "research"
+            }`}
+          >
+            <div>
+              <span className="mode-context-icon">
+                {request.requested_mode === "LICENSED_ADVISORY" ? "A" : "R"}
+              </span>
+              <p>
+                <strong>
+                  {request.requested_mode === "LICENSED_ADVISORY"
+                    ? "Bạn đang ở chế độ Advisor"
+                    : "Bạn đang ở chế độ Research"}
+                </strong>
+                <span>
+                  {request.requested_mode === "LICENSED_ADVISORY"
+                    ? "Câu trả lời dùng investment memo toàn cảnh: hồ sơ, định lượng, sản phẩm, thị trường, vĩ mô, kỹ thuật, rủi ro và điều kiện thực hiện."
+                    : "Hệ thống chỉ so sánh và giáo dục; không phát hành khuyến nghị cấp sản phẩm cá nhân hóa."}
+                </span>
+              </p>
+            </div>
+            {recommendation &&
+              ((request.requested_mode === "LICENSED_ADVISORY") !==
+                (recommendation.released_output.output_release_type ===
+                  "ADVISORY_SELECTED")) && (
+                <small>
+                  Kết quả đang xem được tạo ở chế độ trước. Hãy phân tích lại hồ sơ
+                  để áp dụng chế độ mới.
+                </small>
+              )}
+            <button type="button" onClick={openAdvisory}>
+              Đổi chế độ
+            </button>
           </div>
 
           <div className="message-list" ref={messageListRef} aria-live="polite">
@@ -2410,6 +2483,54 @@ function App() {
               </span>
             </div>
 
+            <div className="mode-choice-grid" aria-label="Chọn chế độ phân tích">
+              <button
+                type="button"
+                className={
+                  request.requested_mode === "RESEARCH_EDUCATION"
+                    ? "selected research"
+                    : "research"
+                }
+                onClick={useResearchMode}
+              >
+                <span>RESEARCH</span>
+                <strong>Nghiên cứu & giáo dục</strong>
+                <small>
+                  So sánh phương án, giải thích nhóm tài sản, không phát hành
+                  khuyến nghị sản phẩm cá nhân hóa.
+                </small>
+                <b>
+                  {request.requested_mode === "RESEARCH_EDUCATION"
+                    ? "✓ ĐANG SỬ DỤNG"
+                    : "CHỌN CHẾ ĐỘ NÀY"}
+                </b>
+              </button>
+              <button
+                type="button"
+                className={
+                  request.requested_mode === "LICENSED_ADVISORY"
+                    ? "selected advisor"
+                    : "advisor"
+                }
+                onClick={useAdvisoryMode}
+                disabled={!advisoryStatus?.authorized}
+              >
+                <span>ADVISOR</span>
+                <strong>Tư vấn được cấp phép</strong>
+                <small>
+                  Phát hành một khuyến nghị và hai lựa chọn thay thế, kèm luận
+                  điểm đầu tư toàn cảnh và điều kiện thực hiện.
+                </small>
+                <b>
+                  {!advisoryStatus?.authorized
+                    ? "CHƯA ĐỦ ĐIỀU KIỆN"
+                    : request.requested_mode === "LICENSED_ADVISORY"
+                      ? "✓ ĐANG SỬ DỤNG"
+                      : "CHỌN CHẾ ĐỘ NÀY"}
+                </b>
+              </button>
+            </div>
+
             <div className="advisor-check-list">
               <label className="advisor-check">
                 <input
@@ -2480,7 +2601,7 @@ function App() {
             </p>
 
             <div className="advisor-actions">
-              <button onClick={useResearchMode}>Dùng Research</button>
+              <button onClick={() => setShowAdvisory(false)}>Đóng</button>
               {advisoryStatus?.can_manage && (
                 <button
                   className="primary-action"

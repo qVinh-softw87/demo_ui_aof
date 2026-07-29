@@ -156,3 +156,27 @@ def test_chat_returns_same_investment_memo_contract_for_every_product(
         "Nguồn, thời điểm và giới hạn",
     }.issubset(titles)
     assert all(len(section.body) <= 1_500 for section in reply.sections)
+
+
+def test_advisor_general_answer_keeps_panorama_instead_of_truncating(
+    advisor_result,
+) -> None:
+    request, released = advisor_result
+    scenario = released.scenarios[0]
+
+    reply, revised = interpret_follow_up(
+        request,
+        "Hãy đánh giá toàn cảnh phương án này như một chuyên gia đầu tư.",
+        released,
+        scenario.scenario_id,
+    )
+    titles = {section.title for section in reply.sections}
+
+    assert revised is None
+    assert {
+        "Toàn cảnh phù hợp với hồ sơ và mục tiêu",
+        "Cấu trúc danh mục và động lực lợi nhuận",
+        "Rủi ro toàn danh mục và kịch bản bất lợi",
+        "Bối cảnh dữ liệu, thị trường và giả định",
+        "Đánh đổi và điều kiện phải tái đánh giá",
+    }.issubset(titles)

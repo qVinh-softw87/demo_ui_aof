@@ -566,7 +566,6 @@ def _product_question(message: str) -> bool:
             "tin tuc",
             "gia ca",
             "dinh gia",
-            "dau tu",
         ]
     )
 
@@ -1020,6 +1019,108 @@ def _comparison_text(released: ReleasedOutput) -> str:
         )
         for item in released.scenarios
     )
+
+
+def _advisor_panorama_sections(
+    released: ReleasedOutput,
+    selected: ReleasedScenario,
+) -> list[ChatAnswerSection]:
+    largest = max(selected.allocations, key=lambda item: item.amount, default=None)
+    worst_stress = min(
+        selected.risk_metrics.stress_tests,
+        key=lambda item: item.estimated_change_amount,
+        default=None,
+    )
+    financial_plan = released.financial_plan
+    profile_fit = (
+        (
+            f"Vốn có thể đầu tư {_money(financial_plan.investable_capital)} sau khi bảo vệ "
+            f"quỹ dự phòng {_money(financial_plan.emergency_reserve)}, nghĩa vụ gần hạn "
+            f"{_money(financial_plan.near_term_liabilities)} và bucket thanh khoản tức thời "
+            f"{_money(financial_plan.immediate_liquidity_bucket)}."
+        )
+        if financial_plan
+        else "Kế hoạch tài chính nền chưa được phát hành; không thể kết luận mức phù hợp hồ sơ."
+    )
+    allocation_focus = (
+        f"Khoản lớn nhất là {largest.product_name or _ASSET_LABELS.get(largest.asset_class.value, largest.asset_class.value)} "
+        f"với {_money(largest.amount)} ({_pct(largest.weight)}). "
+        f"Toàn danh mục: {_allocation_text(selected)}."
+        if largest
+        else "Không có khoản phân bổ được phát hành."
+    )
+    stress_text = (
+        f"Kịch bản bất lợi nhất đang mô hình hóa là “{worst_stress.scenario_name}”, "
+        f"làm thay đổi ước tính {_money(worst_stress.estimated_change_amount)} "
+        f"({_pct(worst_stress.estimated_change_pct)}). {worst_stress.assumptions}"
+        if worst_stress
+        else "Chưa có stress test được phát hành cho phương án này."
+    )
+    triggers = _bounded_text(
+        [
+            f"{item.trigger_condition} Khi kích hoạt: {item.action}"
+            for item in selected.monitoring_triggers[:4]
+        ],
+        "Tính lại khi hồ sơ, dòng tiền hoặc dữ liệu sản phẩm thay đổi đáng kể.",
+        limit=650,
+    )
+    sources = _bounded_text(
+        selected.source_summary[:5],
+        released.data_snapshot,
+        limit=650,
+    )
+    assumptions_text = _bounded_text(
+        selected.assumptions_that_change_result[:5],
+        (
+            "Giá, lãi suất, NAV, biến động và tương quan phải được xác nhận lại "
+            "tại thời điểm thực hiện."
+        ),
+        limit=650,
+    )
+    trade_offs = _bounded_text(
+        selected.trade_offs,
+        "Chưa có mô tả đánh đổi.",
+        limit=650,
+    )
+    return [
+        ChatAnswerSection(
+            title="Toàn cảnh phù hợp với hồ sơ và mục tiêu",
+            body=(
+                f"{profile_fit} Phương án “{selected.name}” được thiết kế để "
+                f"{selected.objective_description.lower()}"
+            ),
+        ),
+        ChatAnswerSection(
+            title="Cấu trúc danh mục và động lực lợi nhuận",
+            body=(
+                f"{allocation_focus} Lợi nhuận kỳ vọng toàn danh mục "
+                f"{_pct(selected.expected_return_rate)} ({_money(selected.expected_return_amount)}) "
+                f"với tổng chi phí mô hình {_money(selected.total_cost_amount)}."
+            ),
+        ),
+        ChatAnswerSection(
+            title="Rủi ro toàn danh mục và kịch bản bất lợi",
+            body=(
+                f"Biến động {_pct(selected.risk_metrics.annualized_volatility)}, "
+                f"VaR 95% {_money(selected.risk_metrics.var_95_amount)}, CVaR 95% "
+                f"{_money(selected.risk_metrics.cvar_95_amount)}, thanh khoản "
+                f"{selected.risk_metrics.liquidity_score:.1f}/100. {stress_text}"
+            ),
+        ),
+        ChatAnswerSection(
+            title="Bối cảnh dữ liệu, thị trường và giả định",
+            body=(
+                f"Nguồn đang dùng: {sources}. "
+                f"Giả định có thể đổi kết quả: {assumptions_text}"
+            ),
+        ),
+        ChatAnswerSection(
+            title="Đánh đổi và điều kiện phải tái đánh giá",
+            body=(
+                f"Đánh đổi chính: {trade_offs} Ngưỡng theo dõi: {triggers}"
+            ),
+        ),
+    ]
 
 
 def _deterministic_answer(
@@ -1822,6 +1923,7 @@ def interpret_follow_up(
         answer = narrative.message
         suggestions = narrative.suggested_questions or suggestions
         generated_by = provider_generated_by
+    advisor_mode = released.output_release_type == "ADVISORY_SELECTED"
     detail_requested = any(
         token in normalized
         for token in [
@@ -1833,7 +1935,14 @@ def interpret_follow_up(
             "so von",
         ]
     )
-    if not detail_requested:
+    if advisor_mode and memo_scenario is not None:
+        existing_titles = {section.title for section in sections}
+        sections.extend(
+            section
+            for section in _advisor_panorama_sections(released, memo_scenario)
+            if section.title not in existing_titles
+        )
+    elif not detail_requested:
         sections = sections[:2]
 
     return (
