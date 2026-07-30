@@ -1270,6 +1270,21 @@ button { cursor: pointer; }
   font-size: 8px;
   line-height: 1.55;
 }
+.advisory-feedback {
+  margin: 9px 0 0;
+  padding: 10px 12px;
+  border: 1px solid #b9d9cc;
+  border-radius: 7px;
+  color: #245d49;
+  background: #e8f4ef;
+  font-size: 8px;
+  line-height: 1.5;
+}
+.advisory-feedback.error {
+  border-color: #e5c1b8;
+  color: #8f3f31;
+  background: #fbeae5;
+}
 .advisor-modal { width: min(680px, 96vw); }
 .advisor-status-card {
   display: grid;

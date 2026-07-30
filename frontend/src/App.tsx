@@ -612,6 +612,10 @@ function App() {
   });
   const [showAdvisory, setShowAdvisory] = useState(false);
   const [advisorySaving, setAdvisorySaving] = useState(false);
+  const [advisoryFeedback, setAdvisoryFeedback] = useState<{
+    kind: "error" | "success";
+    message: string;
+  } | null>(null);
   const [showDepositComparison, setShowDepositComparison] = useState(false);
   const [depositAmount, setDepositAmount] = useState(100_000_000);
   const [depositTenor, setDepositTenor] = useState(12);
@@ -1099,6 +1103,7 @@ function App() {
   };
 
   const openAdvisory = () => {
+    setAdvisoryFeedback(null);
     if (advisoryStatus) {
       setAdvisoryDraft({
         licensed_entity_verified: advisoryStatus.licensed_entity_verified,
@@ -1111,6 +1116,7 @@ function App() {
   };
 
   const useResearchMode = () => {
+    setAdvisoryFeedback(null);
     setRequest((current) => ({
       ...current,
       requested_mode: "RESEARCH_EDUCATION",
@@ -1124,6 +1130,7 @@ function App() {
   };
 
   const useAdvisoryMode = () => {
+    setAdvisoryFeedback(null);
     if (!advisoryStatus?.authorized) {
       setError(
         "Chế độ Advisor chỉ có thể được chọn sau khi đủ ba điều kiện pháp lý."
@@ -1145,13 +1152,24 @@ function App() {
 
   const saveAdvisoryStatus = async () => {
     setAdvisorySaving(true);
+    setAdvisoryFeedback(null);
     setError("");
     try {
-      const status = await api<AdvisoryStatus>("/api/v1/admin/advisory/status", {
+      await api<AdvisoryStatus>("/api/v1/admin/advisory/status", {
         method: "PUT",
         body: JSON.stringify(advisoryDraft)
       });
+      const status = await api<AdvisoryStatus>("/api/v1/advisory/status");
+      const expectedAuthorized =
+        advisoryDraft.licensed_entity_verified &&
+        advisoryDraft.advisory_contract_verified &&
+        advisoryDraft.responsible_advisor_verified;
       setAdvisoryStatus(status);
+      setAdvisoryDraft({
+        licensed_entity_verified: status.licensed_entity_verified,
+        advisory_contract_verified: status.advisory_contract_verified,
+        responsible_advisor_verified: status.responsible_advisor_verified
+      });
       setRequest((current) => ({
         ...current,
         requested_mode: status.authorized
@@ -1163,13 +1181,25 @@ function App() {
           responsible_advisor_verified: status.responsible_advisor_verified
         }
       }));
+      if (expectedAuthorized && !status.authorized) {
+        throw new Error(
+          "Máy chủ chưa ghi nhận đủ ba điều kiện Advisor. Vui lòng thử lưu lại hoặc kiểm tra kết nối cơ sở dữ liệu."
+        );
+      }
+      setAdvisoryFeedback({
+        kind: "success",
+        message: status.authorized
+          ? "Đã xác minh và chuyển sang chế độ Advisor."
+          : "Đã lưu trạng thái và chuyển về chế độ Research."
+      });
       if (status.authorized) setShowAdvisory(false);
     } catch (cause) {
-      setError(
+      const message =
         cause instanceof Error
           ? cause.message
-          : "Không thể cập nhật quyền Advisor."
-      );
+          : "Không thể cập nhật quyền Advisor.";
+      setAdvisoryFeedback({ kind: "error", message });
+      setError(message);
     } finally {
       setAdvisorySaving(false);
     }
@@ -2643,7 +2673,7 @@ function App() {
                 <input
                   type="checkbox"
                   checked={advisoryDraft.licensed_entity_verified}
-                  disabled={!advisoryStatus?.can_manage}
+                  disabled={!advisoryStatus?.can_manage || advisorySaving}
                   onChange={(event) =>
                     setAdvisoryDraft((current) => ({
                       ...current,
@@ -2663,7 +2693,7 @@ function App() {
                 <input
                   type="checkbox"
                   checked={advisoryDraft.advisory_contract_verified}
-                  disabled={!advisoryStatus?.can_manage}
+                  disabled={!advisoryStatus?.can_manage || advisorySaving}
                   onChange={(event) =>
                     setAdvisoryDraft((current) => ({
                       ...current,
@@ -2683,7 +2713,7 @@ function App() {
                 <input
                   type="checkbox"
                   checked={advisoryDraft.responsible_advisor_verified}
-                  disabled={!advisoryStatus?.can_manage}
+                  disabled={!advisoryStatus?.can_manage || advisorySaving}
                   onChange={(event) =>
                     setAdvisoryDraft((current) => ({
                       ...current,
@@ -2706,6 +2736,14 @@ function App() {
                 ? "Bạn đang dùng tài khoản quản trị. Việc đánh dấu là một xác nhận nghiệp vụ và được lưu vào hệ thống."
                 : "Tài khoản thường không thể tự mở Advisor. Quản trị viên hoặc bộ phận tuân thủ phải xác minh các điều kiện này."}
             </p>
+            {advisoryFeedback && (
+              <p
+                className={`advisory-feedback ${advisoryFeedback.kind}`}
+                role="status"
+              >
+                {advisoryFeedback.message}
+              </p>
+            )}
 
             <div className="advisor-actions">
               <button onClick={() => setShowAdvisory(false)}>Đóng</button>

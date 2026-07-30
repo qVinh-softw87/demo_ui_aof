@@ -365,8 +365,8 @@ def upsert_advisory_authorization(
                 int(advisory_contract_verified),
                 int(responsible_advisor_verified),
                 verified_by,
-                int(authorized),
-                int(authorized),
+                authorized,
+                authorized,
             ),
         )
         conn.commit()

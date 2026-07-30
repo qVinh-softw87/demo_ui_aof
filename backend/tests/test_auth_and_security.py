@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+import backend.app.db.repository as advisory_repository
 from backend.app.core.auth import hash_password, verify_password
 from backend.app.core.config import get_settings
 from backend.app.db.sqlite import initialize_database
@@ -265,3 +266,55 @@ def test_advisor_authorization_is_admin_controlled_and_server_owned(tmp_path) ->
             settings.allow_registration,
             settings.llm_provider,
         ) = original
+
+
+def test_advisor_upsert_uses_boolean_case_conditions_for_postgres(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def execute(self, query, params):
+            captured["query"] = query
+            captured["params"] = params
+
+        def commit(self):
+            return None
+
+    monkeypatch.setattr(advisory_repository, "initialize_database", lambda: None)
+    monkeypatch.setattr(
+        advisory_repository,
+        "get_connection",
+        lambda: FakeConnection(),
+    )
+    monkeypatch.setattr(
+        advisory_repository,
+        "fetch_advisory_authorization",
+        lambda user_id: {
+            "user_id": user_id,
+            "licensed_entity_verified": True,
+            "advisory_contract_verified": True,
+            "responsible_advisor_verified": True,
+            "verified_by": "admin-user",
+            "verified_at": "2026-07-30T00:00:00Z",
+        },
+    )
+
+    advisory_repository.upsert_advisory_authorization(
+        user_id="advisor-user",
+        licensed_entity_verified=True,
+        advisory_contract_verified=True,
+        responsible_advisor_verified=True,
+        verified_by="admin-user",
+    )
+
+    params = captured["params"]
+    assert isinstance(params, tuple)
+    assert params[-2:] == (True, True)
+    assert all(isinstance(value, bool) for value in params[-2:])
