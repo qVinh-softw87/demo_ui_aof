@@ -15,6 +15,7 @@ from backend.app.models import (
 )
 from backend.app.services.chat import interpret_follow_up, resolve_scenario_id
 from backend.app.services.orchestrator import run_planning_pipeline
+from backend.app.services.reports import generate_recommendation_pdf
 
 
 def test_research_pipeline_returns_distinct_feasible_compare_only_scenarios() -> None:
@@ -129,6 +130,35 @@ def test_licensed_advisory_releases_product_level_evidence_and_monitoring() -> N
         assert len(scenario.monitoring_triggers) == 7
         assert len(scenario.withdrawal_options) == 4
         assert len(scenario.source_summary) == len(scenario.allocations)
+
+
+def test_advisor_pdf_is_unicode_readable_and_contains_decision_evidence() -> None:
+    payload = default_planning_request().model_dump()
+    payload["requested_mode"] = LegalOperatingMode.LICENSED_ADVISORY
+    payload["legal_evidence"] = {
+        "licensed_entity_verified": True,
+        "advisory_contract_verified": True,
+        "responsible_advisor_verified": True,
+    }
+    response, _ = run_planning_pipeline(
+        PlanningRequest.model_validate(payload),
+        persist=False,
+    )
+
+    pdf_bytes = generate_recommendation_pdf(response.released_output)
+    reader = PdfReader(BytesIO(pdf_bytes))
+    extracted = "\n".join(page.extract_text() or "" for page in reader.pages)
+
+    assert pdf_bytes.startswith(b"%PDF")
+    assert len(reader.pages) >= 8
+    assert "Báo cáo phân bổ tài sản" in extracted
+    assert "Vì sao hình thành tỷ trọng" in extracted
+    assert "Phân tích chi tiết từng sản phẩm" in extracted
+    assert "Rủi ro và điều kiện vô hiệu luận điểm" in extracted
+    assert "Vì sao sản phẩm được chọn hoặc bị loại" in extracted
+    assert "Nguồn và thời điểm cập nhật" in extracted
+    assert "BĂ¡o cĂ¡o" not in extracted
+    assert "\ufffd" not in extracted
 
 
 def test_follow_up_cash_flow_is_parsed_and_replanned() -> None:
@@ -407,6 +437,6 @@ def test_end_to_end_api_persists_audit_and_confirmation() -> None:
             assert len(reader.pages) >= 2
             extracted = "\n".join(page.extract_text() or "" for page in reader.pages)
             assert recommendation_id in extracted
-            assert "Reason code" in extracted
+            assert "Mã kiểm soát" in extracted
 
     asyncio.run(exercise_api())
