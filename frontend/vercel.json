@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "node scripts/prepare-vercel-backend.mjs && npm run build",
+  "outputDirectory": "dist",
+  "fluid": true,
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 300,
+      "includeFiles": "backend/**",
+      "excludeFiles": "{backend/tests/**,backend/**/__pycache__/**}"
+    }
+  }
+}

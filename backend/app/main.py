@@ -163,6 +163,13 @@ def health() -> dict[str, Any]:
     }
 
 
+@app.get("/api/health", include_in_schema=False)
+def api_health() -> dict[str, Any]:
+    """Same-origin health endpoint used by Vercel's /api function routing."""
+
+    return health()
+
+
 @app.get("/ready")
 def readiness() -> dict[str, str | list[str]]:
     failures: list[str] = []

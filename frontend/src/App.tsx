@@ -679,7 +679,7 @@ function App() {
   useEffect(() => {
     const bootstrap = async () => {
       try {
-        const status = await api<Health>("/health");
+        const status = await api<Health>("/api/health");
         let currentAdvisoryStatus: AdvisoryStatus | null = null;
         setHealth(status);
         if (status.auth_required && localStorage.getItem("monopoly_access_token")) {
@@ -1016,7 +1016,7 @@ function App() {
         method: "POST"
       });
       setDataSummary(summary);
-      const status = await api<Health>("/health");
+      const status = await api<Health>("/api/health");
       setHealth(status);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Không thể đồng bộ dữ liệu.");
