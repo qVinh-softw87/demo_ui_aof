@@ -713,6 +713,29 @@ function App() {
     insightPanelRef.current?.scrollTo({ top: 0, behavior: "smooth" });
   }, [recommendation?.released_output.recommendation_id, activeScenario]);
 
+  useEffect(() => {
+    const fetchHistory = async () => {
+      const recId = recommendation?.released_output.recommendation_id;
+      if (recId) {
+        try {
+          const res = await api<{messages: {role: string, content: string}[]}>(
+            `/api/v1/recommendations/${recId}/chat`
+          );
+          if (res.messages && res.messages.length > 0) {
+            setMessages(res.messages.map(m => ({
+              id: uid(),
+              role: m.role as "user" | "assistant",
+              text: m.content
+            })));
+          }
+        } catch {
+          // fallback to current messages
+        }
+      }
+    };
+    fetchHistory();
+  }, [recommendation?.released_output.recommendation_id]);
+
   const profile = request.profile;
   const capital =
     profile.total_assets - profile.emergency_reserve - profile.near_term_liabilities;
@@ -2447,6 +2470,30 @@ function App() {
                 </p>
                 <code>{recommendation.released_output.recommendation_id}</code>
               </article>
+              
+              <div style={{ marginTop: "24px" }}>
+                <button 
+                  onClick={downloadReport} 
+                  style={{
+                    padding: "14px 24px",
+                    background: "var(--green)",
+                    color: "#fff",
+                    border: "none",
+                    borderRadius: "8px",
+                    fontWeight: 700,
+                    width: "100%",
+                    fontSize: "13px",
+                    cursor: "pointer",
+                    boxShadow: "0 4px 12px rgba(33, 91, 75, 0.2)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: "8px"
+                  }}
+                >
+                  📥 Tải Báo Cáo PDF Khuyến Nghị
+                </button>
+              </div>
             </>
           ) : null}
         </aside>

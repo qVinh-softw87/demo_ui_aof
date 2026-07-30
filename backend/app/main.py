@@ -501,9 +501,19 @@ def export_recommendation_report(
             "Content-Disposition": (
                 f'attachment; filename="portfolio-report-{recommendation_id}.pdf"'
             )
-        },
     )
 
+@app.get("/api/v1/recommendations/{recommendation_id}/chat")
+def get_chat_history(
+    recommendation_id: str,
+    user: UserContext = Depends(get_current_user),
+):
+    stored = fetch_recommendation(recommendation_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="Recommendation not found")
+    _authorize_recommendation(stored, user)
+    history = list_chat_messages(recommendation_id)
+    return {"messages": history}
 
 @app.post("/api/v1/chat", response_model=ChatResponse)
 def chat(
