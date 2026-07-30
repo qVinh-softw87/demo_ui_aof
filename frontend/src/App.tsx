@@ -504,10 +504,15 @@ const messageForHistory = (message: Message) => {
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const accessToken = localStorage.getItem("monopoly_access_token");
   let response: Response;
-  const baseUrl = import.meta.env.VITE_API_URL || "";
-  const fullPath = path.startsWith("/") && baseUrl.endsWith("/")
-    ? baseUrl.slice(0, -1) + path
-    : baseUrl + path;
+  const baseUrl = (
+    import.meta.env.VITE_API_BASE_URL ||
+    import.meta.env.VITE_API_URL ||
+    ""
+  )
+    .trim()
+    .replace(/\/+$/, "");
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const fullPath = `${baseUrl}${normalizedPath}`;
   try {
     response = await fetch(fullPath, {
       headers: {
@@ -525,6 +530,11 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
     );
   }
   if (!response.ok) {
+    if (response.status === 404 && normalizedPath.startsWith("/api/")) {
+      throw new Error(
+        "Backend API chưa được triển khai hoặc VITE_API_BASE_URL chưa trỏ đúng máy chủ FastAPI."
+      );
+    }
     const body = await response.json().catch(() => ({}));
     const detail = body.detail;
     const readableDetail =
