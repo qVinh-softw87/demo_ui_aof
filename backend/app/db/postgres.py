@@ -61,6 +61,14 @@ def get_connection(db_path: Path | None = None) -> PostgresConnectionWrapper:
         database_url = database_url[len("DATABASE_URL="):]
     database_url = database_url.strip('"').strip("'")
     
+    # Auto-fix unencoded special characters in the password
+    import re
+    from urllib.parse import unquote, quote
+    match = re.match(r"(postgresql://[^:]+:)([^@]+)(@.*)", database_url)
+    if match:
+        safe_password = quote(unquote(match.group(2)))
+        database_url = match.group(1) + safe_password + match.group(3)
+        
     conn = psycopg2.connect(database_url)
     conn.autocommit = False
     return PostgresConnectionWrapper(conn)
