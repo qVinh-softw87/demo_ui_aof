@@ -69,6 +69,9 @@ def get_connection(db_path: Path | None = None) -> PostgresConnectionWrapper:
         safe_password = quote(unquote(match.group(2)))
         database_url = match.group(1) + safe_password + match.group(3)
         
+    # Remove unsupported libpq parameter
+    database_url = database_url.replace("?pgbouncer=true", "").replace("&pgbouncer=true", "")
+        
     conn = psycopg2.connect(database_url)
     conn.autocommit = False
     return PostgresConnectionWrapper(conn)
