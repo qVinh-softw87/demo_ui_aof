@@ -69,6 +69,7 @@ from backend.app.services.market_data import market_data_summary, refresh_market
 from backend.app.services.orchestrator import (
     run_complexity_resolve,
     run_planning_pipeline,
+    synchronize_mock_product_definitions,
 )
 from backend.app.services.reports import generate_recommendation_pdf
 
@@ -98,8 +99,7 @@ async def lifespan(_: FastAPI):
             password_salt="disabled-local-demo-salt",
             role="admin",
         )
-    if not fetch_asset_products(approved_only=False):
-        upsert_asset_products(load_mock_asset_products(settings.data_dir))
+    synchronize_mock_product_definitions()
     market_task = (
         asyncio.create_task(_market_data_refresh_loop())
         if settings.market_data_auto_refresh

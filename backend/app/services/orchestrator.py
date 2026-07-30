@@ -47,12 +47,42 @@ PIPELINE_STEPS = [
 
 
 def _load_products() -> list[AssetProduct]:
-    settings = get_settings()
+    synchronize_mock_product_definitions()
     rows = fetch_asset_products(approved_only=True)
-    if not rows:
-        upsert_asset_products(load_mock_asset_products(settings.data_dir))
-        rows = fetch_asset_products(approved_only=True)
     return [AssetProduct.model_validate(row) for row in rows]
+
+
+def synchronize_mock_product_definitions() -> int:
+    """Refresh code-owned mock rows without re-enabling restricted fallbacks."""
+
+    settings = get_settings()
+    canonical_products = load_mock_asset_products(settings.data_dir)
+    existing_rows = fetch_asset_products(approved_only=False)
+    if not existing_rows:
+        return upsert_asset_products(canonical_products)
+
+    existing_by_id = {
+        row["product_id"]: row
+        for row in existing_rows
+    }
+    approved_mock_ids = {
+        row["product_id"]
+        for row in existing_rows
+        if str(row.get("source_registry_id", "")).startswith("MOCK")
+        and str(row.get("rights_status", "")) == "APPROVED"
+    }
+    products_to_refresh = [
+        product
+        for product in canonical_products
+        if product.product_id in approved_mock_ids
+        and AssetProduct.model_validate(
+            existing_by_id[product.product_id]
+        ).model_dump(mode="json")
+        != product.model_dump(mode="json")
+    ]
+    if not products_to_refresh:
+        return 0
+    return upsert_asset_products(products_to_refresh)
 
 
 def _build_selection_decisions(
@@ -65,6 +95,12 @@ def _build_selection_decisions(
         for scenario in scenarios
         for allocation in scenario.product_allocations
     }
+    selected_reason_codes: dict[str, set[str]] = {}
+    for scenario in scenarios:
+        for allocation in scenario.product_allocations:
+            selected_reason_codes.setdefault(allocation.product_id, set()).update(
+                allocation.reason_codes
+            )
     complexity_excluded_ids = {
         product_id
         for scenario in scenarios
@@ -85,7 +121,11 @@ def _build_selection_decisions(
                 "SELECTED_BY_COUPLED_OPTIMIZER",
                 "WITHIN_PRODUCT_AND_PORTFOLIO_CONSTRAINTS",
             ]
-            if product.asset_class.value == "GOLD":
+            if (
+                product.asset_class.value == "GOLD"
+                and "STRATEGIC_GOLD_DIVERSIFIER_FLOOR"
+                in selected_reason_codes.get(product.product_id, set())
+            ):
                 reason_codes.append("STRATEGIC_GOLD_DIVERSIFIER_FLOOR")
                 reasons = [
                     f"{product.product_name} được chọn theo đơn vị vật chất nguyên chiếc để bổ sung vai trò đa dạng hóa; tỷ trọng thực tế bị làm tròn theo giá một chỉ hoặc một miếng.",
@@ -93,6 +133,25 @@ def _build_selection_decisions(
                         f"Optimizer vẫn kiểm tra lợi nhuận mô hình {product.expected_return * 100:.2f}%/năm, "
                         f"biến động {product.volatility * 100:.2f}%, chênh lệch mua–bán và "
                         f"thanh khoản {product.liquidity_score}/100."
+                    ),
+                ]
+            elif (
+                product.asset_class.value == "BOND_FUND"
+                and "STRATEGIC_FIXED_INCOME_DIVERSIFIER_FLOOR"
+                in selected_reason_codes.get(product.product_id, set())
+            ):
+                reason_codes.append("STRATEGIC_FIXED_INCOME_DIVERSIFIER_FLOOR")
+                reasons = [
+                    (
+                        f"{product.product_name} tạo lớp thu nhập cố định ngoài tiền gửi, "
+                        "giúp phương án dài hạn không phụ thuộc hoàn toàn vào một cơ chế "
+                        "lãi suất ngân hàng."
+                    ),
+                    (
+                        f"Optimizer vẫn kiểm tra lợi nhuận mô hình "
+                        f"{product.expected_return * 100:.2f}%/năm, biến động "
+                        f"{product.volatility * 100:.2f}%, thanh khoản "
+                        f"{product.liquidity_score}/100 và giới hạn số ứng dụng của hồ sơ."
                     ),
                 ]
             else:

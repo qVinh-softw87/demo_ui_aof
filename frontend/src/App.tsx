@@ -501,20 +501,26 @@ const messageForHistory = (message: Message) => {
   return `${clipped.slice(0, Math.max(lastWordBoundary, 0))}…`;
 };
 
-async function api<T>(path: string, options?: RequestInit): Promise<T> {
-  const accessToken = localStorage.getItem("monopoly_access_token");
-  let response: Response;
-  const baseUrl = (
+const apiBaseUrl = () =>
+  (
     import.meta.env.VITE_API_BASE_URL ||
     import.meta.env.VITE_API_URL ||
     ""
   )
     .trim()
     .replace(/\/+$/, "");
+
+const apiUrl = (path: string) => {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  const fullPath = `${baseUrl}${normalizedPath}`;
+  return `${apiBaseUrl()}${normalizedPath}`;
+};
+
+async function api<T>(path: string, options?: RequestInit): Promise<T> {
+  const accessToken = localStorage.getItem("monopoly_access_token");
+  let response: Response;
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
   try {
-    response = await fetch(fullPath, {
+    response = await fetch(apiUrl(normalizedPath), {
       headers: {
         "Content-Type": "application/json",
         ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
@@ -649,6 +655,7 @@ function App() {
   const [depositSegment, setDepositSegment] = useState("retail");
   const [depositResult, setDepositResult] = useState<DepositComparison | null>(null);
   const [depositLoading, setDepositLoading] = useState(false);
+  const [reportLoading, setReportLoading] = useState(false);
   const [view, setView] = useState<"chat" | "results" | "profile">("chat");
   const [activeProfileSection, setActiveProfileSection] = useState("demographics");
   const [profileSaving, setProfileSaving] = useState(false);
@@ -1269,23 +1276,40 @@ function App() {
     }
   };
   const downloadReport = async () => {
-    if (!recommendation) return;
-    const token = localStorage.getItem("monopoly_access_token");
-    const baseUrl = import.meta.env.VITE_API_URL || "";
-    const response = await fetch(
-      `${baseUrl}/api/v1/recommendations/${recommendation.released_output.recommendation_id}/report.pdf`,
-      { headers: token ? { Authorization: `Bearer ${token}` } : {} }
-    );
-    if (!response.ok) {
-      setError("Không thể tải báo cáo PDF.");
-      return;
+    if (!recommendation || reportLoading) return;
+    setReportLoading(true);
+    setError("");
+    try {
+      const token = localStorage.getItem("monopoly_access_token");
+      const response = await fetch(
+        apiUrl(
+          `/api/v1/recommendations/${recommendation.released_output.recommendation_id}/report.pdf`
+        ),
+        { headers: token ? { Authorization: `Bearer ${token}` } : {} }
+      );
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        const detail =
+          body && typeof body.detail === "string" ? ` ${body.detail}` : "";
+        throw new Error(`Không thể tải báo cáo PDF.${detail}`);
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `portfolio-report-${recommendation.released_output.recommendation_id}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Không thể kết nối máy chủ để tải báo cáo PDF."
+      );
+    } finally {
+      setReportLoading(false);
     }
-    const url = URL.createObjectURL(await response.blob());
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `portfolio-report-${recommendation.released_output.recommendation_id}.pdf`;
-    link.click();
-    URL.revokeObjectURL(url);
   };
 
   const updateGoal = <K extends keyof FinancialGoal>(
@@ -2124,6 +2148,14 @@ function App() {
             </button>
           </div>
         </div>
+        {error && (
+          <div className="results-error" role="alert">
+            <span>{error}</span>
+            <button type="button" onClick={() => setError("")} aria-label="Đóng thông báo lỗi">
+              ×
+            </button>
+          </div>
+        )}
         <aside className="insight-panel" ref={insightPanelRef}>
           {!recommendation ? (
             <div className="insight-empty">
@@ -2162,8 +2194,12 @@ function App() {
                     </span>
                     <h2>{scenario.name}</h2>
                   </div>
-                  <button className="report-link" onClick={downloadReport}>
-                    PDF ↗
+                  <button
+                    className="report-link"
+                    onClick={downloadReport}
+                    disabled={reportLoading}
+                  >
+                    {reportLoading ? "Đang tạo PDF…" : "PDF ↗"}
                   </button>
                 </div>
 
@@ -2588,6 +2624,7 @@ function App() {
               <div style={{ marginTop: "24px" }}>
                 <button 
                   onClick={downloadReport} 
+                  disabled={reportLoading}
                   style={{
                     padding: "14px 24px",
                     background: "var(--green)",
@@ -2597,7 +2634,7 @@ function App() {
                     fontWeight: 700,
                     width: "100%",
                     fontSize: "13px",
-                    cursor: "pointer",
+                    cursor: reportLoading ? "wait" : "pointer",
                     boxShadow: "0 4px 12px rgba(33, 91, 75, 0.2)",
                     display: "flex",
                     alignItems: "center",
@@ -2605,7 +2642,9 @@ function App() {
                     gap: "8px"
                   }}
                 >
-                  📥 Tải Báo Cáo PDF Khuyến Nghị
+                  {reportLoading
+                    ? "Đang tạo báo cáo PDF…"
+                    : "📥 Tải Báo Cáo PDF Khuyến Nghị"}
                 </button>
               </div>
             </>

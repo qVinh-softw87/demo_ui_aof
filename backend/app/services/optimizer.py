@@ -4,6 +4,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from hashlib import sha256
+from math import ceil
 
 from ortools.sat.python import cp_model
 
@@ -49,6 +50,7 @@ class ScenarioConfig:
     min_growth_weight: dict[RiskCapacity, float]
     max_growth_weight: dict[RiskCapacity, float]
     min_gold_weight: dict[RiskCapacity, float]
+    min_bond_fund_weight: dict[RiskCapacity, float]
 
 
 SCENARIO_CONFIGS = [
@@ -77,6 +79,11 @@ SCENARIO_CONFIGS = [
             RiskCapacity.MEDIUM: 0.02,
             RiskCapacity.HIGH: 0.02,
         },
+        min_bond_fund_weight={
+            RiskCapacity.LOW: 0.03,
+            RiskCapacity.MEDIUM: 0.03,
+            RiskCapacity.HIGH: 0.03,
+        },
     ),
     ScenarioConfig(
         style=ScenarioStyle.BALANCED,
@@ -102,6 +109,11 @@ SCENARIO_CONFIGS = [
             RiskCapacity.LOW: 0.02,
             RiskCapacity.MEDIUM: 0.04,
             RiskCapacity.HIGH: 0.05,
+        },
+        min_bond_fund_weight={
+            RiskCapacity.LOW: 0.04,
+            RiskCapacity.MEDIUM: 0.04,
+            RiskCapacity.HIGH: 0.04,
         },
     ),
     ScenarioConfig(
@@ -129,13 +141,24 @@ SCENARIO_CONFIGS = [
             RiskCapacity.MEDIUM: 0.04,
             RiskCapacity.HIGH: 0.05,
         },
+        min_bond_fund_weight={
+            RiskCapacity.LOW: 0.00,
+            RiskCapacity.MEDIUM: 0.00,
+            RiskCapacity.HIGH: 0.00,
+        },
     ),
 ]
 
 
 def _rounding_step(product: AssetProduct) -> int:
     if product.allocation_rule_type == AllocationRuleType.DISCRETE_UNIT:
-        return max(MONEY_UNIT, round(product.minimum_investment / MONEY_UNIT) * MONEY_UNIT)
+        lot_size = 100 if product.rounding_rule == RoundingRule.BOARD_LOT_100 else 1
+        unit_value = (
+            product.buy_price * lot_size
+            if product.buy_price and product.buy_price > 0
+            else product.minimum_investment
+        )
+        return max(MONEY_UNIT, round(unit_value / MONEY_UNIT) * MONEY_UNIT)
     return {
         RoundingRule.NONE: MONEY_UNIT,
         RoundingRule.VND_1K: 1_000,
@@ -199,7 +222,7 @@ def _add_product_variables(
     quantity = model.new_int_var(0, capital_units // step_units, f"qty__{product.product_id}")
     model.add(amount == quantity * step_units)
 
-    minimum_units = max(1, round(product.minimum_investment / MONEY_UNIT))
+    minimum_units = max(1, ceil(product.minimum_investment / MONEY_UNIT))
     hinted_cap = capital_units
     if product.max_weight_hint is not None:
         hinted_cap = max(0, int(capital_units * product.max_weight_hint))
@@ -344,12 +367,49 @@ def _solve_one(
                     product_cap_units,
                     int(capital_units * product.max_weight_hint),
                 )
-            minimum_units = max(1, round(product.minimum_investment / MONEY_UNIT))
+            minimum_units = max(1, ceil(product.minimum_investment / MONEY_UNIT))
             if minimum_units <= product_cap_units:
                 feasible_gold_amounts.append(amounts[product.product_id])
         if feasible_gold_amounts:
             model.add(sum(feasible_gold_amounts) >= int(capital_units * requested_gold_floor))
             gold_floor_applied = True
+
+    # A modest fixed-income floor keeps at least one long-horizon scenario from
+    # collapsing into deposits only. It is enabled only when the user's stated
+    # convenience limits can support a genuinely diversified implementation.
+    bond_floor_applied = False
+    requested_bond_floor = config.min_bond_fund_weight[profile.risk_capacity]
+    if (
+        profile.horizon_months >= 12
+        and profile.max_financial_apps >= 3
+        and profile.max_product_count >= 4
+        and requested_bond_floor > 0
+    ):
+        feasible_bond_amounts: list[cp_model.IntVar] = []
+        class_cap_units = int(
+            capital_units * _class_max_weight(AssetClass.BOND_FUND, profile)
+        )
+        for product in products:
+            if (
+                product.asset_class != AssetClass.BOND_FUND
+                or product.product_id not in amounts
+            ):
+                continue
+            product_cap_units = class_cap_units
+            if product.max_weight_hint is not None:
+                product_cap_units = min(
+                    product_cap_units,
+                    int(capital_units * product.max_weight_hint),
+                )
+            minimum_units = max(1, ceil(product.minimum_investment / MONEY_UNIT))
+            if minimum_units <= product_cap_units:
+                feasible_bond_amounts.append(amounts[product.product_id])
+        if feasible_bond_amounts:
+            model.add(
+                sum(feasible_bond_amounts)
+                >= int(capital_units * requested_bond_floor)
+            )
+            bond_floor_applied = True
 
     cash_amounts = by_class.get(AssetClass.CASH, [])
     if cash_amounts and financial_plan.immediate_liquidity_bucket > 0:
@@ -509,6 +569,14 @@ def _solve_one(
                     + (
                         ["STRATEGIC_GOLD_DIVERSIFIER_FLOOR"]
                         if product.asset_class == AssetClass.GOLD and gold_floor_applied
+                        else []
+                    )
+                    + (
+                        ["STRATEGIC_FIXED_INCOME_DIVERSIFIER_FLOOR"]
+                        if (
+                            product.asset_class == AssetClass.BOND_FUND
+                            and bond_floor_applied
+                        )
                         else []
                     )
                 ),
