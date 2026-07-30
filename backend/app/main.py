@@ -502,6 +502,7 @@ def export_recommendation_report(
             "Content-Disposition": (
                 f'attachment; filename="portfolio-report-{recommendation_id}.pdf"'
             )
+        },
     )
 
 @app.get("/api/v1/recommendations/{recommendation_id}/chat")
