@@ -419,6 +419,7 @@ def get_recommendation(
         raise HTTPException(status_code=404, detail="Recommendation not found")
     _authorize_recommendation(stored, user)
     return {
+        "request": stored.get("request"),
         "released_output": stored["released_output"],
         "explanation": stored["explanation"],
         "status": stored["status"],

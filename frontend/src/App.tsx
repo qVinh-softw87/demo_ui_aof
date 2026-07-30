@@ -622,8 +622,38 @@ function App() {
   const [activeProfileSection, setActiveProfileSection] = useState("demographics");
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileSaved, setProfileSaved] = useState(false);
+  const [historySessions, setHistorySessions] = useState<any[]>([]);
   const messageListRef = useRef<HTMLDivElement>(null);
   const insightPanelRef = useRef<HTMLElement>(null);
+
+  const fetchHistorySessions = async () => {
+    try {
+      const token = localStorage.getItem("monopoly_access_token");
+      if (token || !health?.auth_required) {
+        const data = await api<any[]>("/api/v1/me/recommendations");
+        setHistorySessions(data);
+      }
+    } catch {
+      // Ignore
+    }
+  };
+
+  const loadSession = async (id: string) => {
+    try {
+      const data = await api<any>(`/api/v1/recommendations/${id}`);
+      if (data.request) {
+        setRequest(data.request);
+      }
+      setRecommendation({
+        released_output: data.released_output,
+        explanation: data.explanation,
+        status: data.status,
+      } as Recommendation);
+      setView("results");
+    } catch (e) {
+      setError("Không thể tải phiên làm việc này.");
+    }
+  };
 
   useEffect(() => {
     const bootstrap = async () => {
@@ -735,6 +765,12 @@ function App() {
     };
     fetchHistory();
   }, [recommendation?.released_output.recommendation_id]);
+
+  useEffect(() => {
+    if (view === "chat" || view === "results") {
+      fetchHistorySessions();
+    }
+  }, [view, health?.auth_required]);
 
   const profile = request.profile;
   const capital =
@@ -1855,7 +1891,21 @@ function App() {
         </aside>}
 
         {view === "chat" && (
-        <section className="conversation-panel">
+        <>
+          <aside className="chat-history-sidebar">
+            <h3>Lịch sử trò chuyện</h3>
+            {historySessions.length === 0 ? (
+              <span style={{fontSize: 12, color: "var(--text-light)"}}>Chưa có phiên nào.</span>
+            ) : (
+              historySessions.map((session) => (
+                <div key={session.recommendation_id} className="history-session" onClick={() => loadSession(session.recommendation_id)}>
+                  <strong>{session.goal || "Chưa đặt tên"}</strong>
+                  <span>{new Date(session.created_at).toLocaleDateString("vi-VN")} · {session.scenario_count} phương án</span>
+                </div>
+              ))
+            )}
+          </aside>
+          <section className="conversation-panel">
           <div className="conversation-heading">
             <div>
               <span className="eyebrow">Trợ lý chính</span>
@@ -1981,6 +2031,7 @@ function App() {
             </p>
           </div>
         </section>
+        </>
         )}
 
         {view === "results" && (
