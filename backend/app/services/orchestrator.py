@@ -7,7 +7,7 @@ from uuid import uuid4
 from backend.app.core.config import get_settings
 from backend.app.data.mock_asset_products import load_mock_asset_products
 from backend.app.db.repository import append_audit, save_recommendation
-from backend.app.db.sqlite import fetch_asset_products, upsert_asset_products
+from backend.app.db import fetch_asset_products, upsert_asset_products
 from backend.app.models import (
     AssetProduct,
     FullCalculationOutput,

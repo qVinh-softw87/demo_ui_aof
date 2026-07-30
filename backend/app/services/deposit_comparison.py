@@ -5,7 +5,7 @@ import unicodedata
 from datetime import datetime
 from typing import Any
 
-from backend.app.db.sqlite import fetch_asset_products
+from backend.app.db import fetch_asset_products
 from backend.app.models import AssetClass, AssetProduct
 
 

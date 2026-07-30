@@ -31,7 +31,7 @@ from backend.app.db.repository import (
     upsert_advisory_authorization,
     upsert_user_profile,
 )
-from backend.app.db.sqlite import (
+from backend.app.db import (
     fetch_asset_product,
     fetch_asset_products,
     get_connection,

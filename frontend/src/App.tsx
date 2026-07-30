@@ -487,8 +487,12 @@ const uid = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const accessToken = localStorage.getItem("monopoly_access_token");
   let response: Response;
+  const baseUrl = import.meta.env.VITE_API_URL || "";
+  const fullPath = path.startsWith("/") && baseUrl.endsWith("/")
+    ? baseUrl.slice(0, -1) + path
+    : baseUrl + path;
   try {
-    response = await fetch(path, {
+    response = await fetch(fullPath, {
       headers: {
         "Content-Type": "application/json",
         ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
@@ -1143,8 +1147,9 @@ function App() {
   const downloadReport = async () => {
     if (!recommendation) return;
     const token = localStorage.getItem("monopoly_access_token");
+    const baseUrl = import.meta.env.VITE_API_URL || "";
     const response = await fetch(
-      `/api/v1/recommendations/${recommendation.released_output.recommendation_id}/report.pdf`,
+      `${baseUrl}/api/v1/recommendations/${recommendation.released_output.recommendation_id}/report.pdf`,
       { headers: token ? { Authorization: `Bearer ${token}` } : {} }
     );
     if (!response.ok) {

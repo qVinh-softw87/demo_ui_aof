@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from backend.app.db.sqlite import get_connection, initialize_database
+from backend.app.db import get_connection, initialize_database
 from backend.app.models import (
     ConfirmationRequest,
     FullCalculationOutput,

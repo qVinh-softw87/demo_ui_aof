@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from backend.app.db.sqlite import get_connection, initialize_database
+from backend.app.db import get_connection, initialize_database
 
 
 def save_source_result(
