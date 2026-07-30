@@ -55,6 +55,12 @@ def get_connection(db_path: Path | None = None) -> PostgresConnectionWrapper:
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
         raise ValueError("DATABASE_URL environment variable is required for PostgreSQL")
+        
+    database_url = database_url.strip()
+    if database_url.startswith("DATABASE_URL="):
+        database_url = database_url[len("DATABASE_URL="):]
+    database_url = database_url.strip('"').strip("'")
+    
     conn = psycopg2.connect(database_url)
     conn.autocommit = False
     return PostgresConnectionWrapper(conn)
