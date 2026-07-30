@@ -166,7 +166,7 @@ def list_audit_logs(recommendation_id: str) -> list[dict[str, Any]]:
             """
             SELECT audit_id, user_id, module_name, event_type, input_json,
                    output_json, recommendation_id, created_at
-            FROM audit_logs WHERE recommendation_id = ? ORDER BY created_at, rowid
+            FROM audit_logs WHERE recommendation_id = ? ORDER BY created_at, audit_id
             """,
             (recommendation_id,),
         ).fetchall()
@@ -415,7 +415,7 @@ def list_chat_messages(recommendation_id: str) -> list[dict[str, Any]]:
             SELECT message_id, role, content, metadata_json, created_at
             FROM chat_messages
             WHERE recommendation_id = ?
-            ORDER BY created_at, rowid
+            ORDER BY created_at, message_id
             """,
             (recommendation_id,),
         ).fetchall()
