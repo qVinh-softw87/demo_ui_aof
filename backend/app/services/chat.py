@@ -383,6 +383,350 @@ def resolve_scenario_id(
     return released.scenarios[0].scenario_id
 
 
+def _same_style_scenario(
+    released: ReleasedOutput,
+    reference: ReleasedScenario | None,
+) -> ReleasedScenario | None:
+    if not released.scenarios:
+        return None
+    if reference is not None:
+        for scenario in released.scenarios:
+            if scenario.style == reference.style:
+                return scenario
+    return released.scenarios[0]
+
+
+def _signed_money(value: int | float) -> str:
+    rounded = round(value)
+    prefix = "+" if rounded > 0 else ""
+    return f"{prefix}{_money(rounded)}"
+
+
+def _signed_pct_points(value: float) -> str:
+    prefix = "+" if value > 0 else ""
+    return f"{prefix}{value * 100:.2f} điểm %".replace(".", ",")
+
+
+def _allocation_key(allocation: Any, product_level: bool) -> str:
+    if product_level and getattr(allocation, "product_id", None):
+        return f"PRODUCT:{allocation.product_id}"
+    return f"ASSET:{allocation.asset_class.value}"
+
+
+def _allocation_label(allocation: Any, product_level: bool) -> str:
+    if product_level and getattr(allocation, "product_name", None):
+        provider = getattr(allocation, "provider", None)
+        return (
+            f"{allocation.product_name} · {provider}"
+            if provider and provider not in allocation.product_name
+            else allocation.product_name
+        )
+    return _ASSET_LABELS.get(
+        allocation.asset_class.value,
+        allocation.asset_class.value,
+    )
+
+
+def _profile_change_text(
+    original: PlanningRequest,
+    revised: PlanningRequest,
+) -> str:
+    before = original.profile
+    after = revised.profile
+    changes: list[str] = []
+    if before.total_assets != after.total_assets:
+        changes.append(
+            f"Tổng tài sản {_money(before.total_assets)} → {_money(after.total_assets)} "
+            f"({_signed_money(after.total_assets - before.total_assets)})."
+        )
+    if before.liquidity_need != after.liquidity_need:
+        changes.append(
+            f"Nhu cầu tiền có thể rút {_money(before.liquidity_need)} → "
+            f"{_money(after.liquidity_need)} "
+            f"({_signed_money(after.liquidity_need - before.liquidity_need)})."
+        )
+    if before.liquidity_need_months != after.liquidity_need_months:
+        changes.append(
+            f"Thời điểm cần tiền {before.liquidity_need_months} → "
+            f"{after.liquidity_need_months} tháng."
+        )
+    return " ".join(changes) or "Không có trường hồ sơ định lượng nào thay đổi."
+
+
+def _allocation_change_text(
+    before: ReleasedScenario,
+    after: ReleasedScenario,
+    *,
+    product_level: bool,
+) -> tuple[str, int]:
+    before_map = {
+        _allocation_key(item, product_level): item
+        for item in before.allocations
+    }
+    after_map = {
+        _allocation_key(item, product_level): item
+        for item in after.allocations
+    }
+    rows: list[tuple[int, str]] = []
+    for key in before_map.keys() | after_map.keys():
+        old = before_map.get(key)
+        new = after_map.get(key)
+        template = new or old
+        if template is None:
+            continue
+        old_amount = old.amount if old else 0
+        new_amount = new.amount if new else 0
+        old_weight = old.weight if old else 0
+        new_weight = new.weight if new else 0
+        amount_delta = new_amount - old_amount
+        weight_delta = new_weight - old_weight
+        if amount_delta == 0 and abs(weight_delta) < 0.00005:
+            continue
+        label = _allocation_label(template, product_level)
+        rows.append(
+            (
+                abs(amount_delta),
+                (
+                    f"{label}: {_money(old_amount)} ({_pct(old_weight)}) → "
+                    f"{_money(new_amount)} ({_pct(new_weight)}); "
+                    f"{_signed_money(amount_delta)}, "
+                    f"{_signed_pct_points(weight_delta)}."
+                ),
+            )
+        )
+    rows.sort(key=lambda item: item[0], reverse=True)
+    if not rows:
+        return (
+            "Không có khoản phân bổ nào thay đổi: số tiền và tỷ trọng của tất cả "
+            "nhóm/sản phẩm trong phương án này giữ nguyên.",
+            0,
+        )
+    return (
+        _bounded_text(
+            [row[1] for row in rows],
+            "Không có thay đổi phân bổ.",
+            limit=1_450,
+        ),
+        len(rows),
+    )
+
+
+def _replanning_reason_text(
+    original: PlanningRequest,
+    revised: PlanningRequest,
+    before_output: ReleasedOutput,
+    after_output: ReleasedOutput,
+    allocation_change_count: int,
+) -> str:
+    before_plan = before_output.financial_plan
+    after_plan = after_output.financial_plan
+    reasons: list[str] = []
+    liquidity_delta = (
+        revised.profile.liquidity_need - original.profile.liquidity_need
+    )
+    if liquidity_delta > 0:
+        reasons.append(
+            f"Ràng buộc thanh khoản tăng {_money(liquidity_delta)}, nên optimizer phải "
+            "ưu tiên tài sản rút nhanh hơn và hạn chế phần vốn khóa lâu."
+        )
+    elif liquidity_delta < 0:
+        reasons.append(
+            f"Yêu cầu mới {_money(revised.profile.liquidity_need)} thấp hơn mức "
+            f"{_money(original.profile.liquidity_need)} đã dự phòng trước đó; ràng buộc "
+            "thanh khoản vì vậy được nới, không bị siết thêm."
+        )
+    if before_plan and after_plan:
+        capital_delta = after_plan.investable_capital - before_plan.investable_capital
+        if capital_delta:
+            reasons.append(
+                f"Vốn có thể đầu tư thay đổi {_signed_money(capital_delta)}, nên số tiền "
+                "tuyệt đối ở các khoản phải được tối ưu lại."
+            )
+        bucket_delta = (
+            after_plan.immediate_liquidity_bucket
+            - before_plan.immediate_liquidity_bucket
+        )
+        if bucket_delta:
+            reasons.append(
+                f"Bucket thanh khoản tức thời đổi từ "
+                f"{_money(before_plan.immediate_liquidity_bucket)} thành "
+                f"{_money(after_plan.immediate_liquidity_bucket)}."
+            )
+    if allocation_change_count == 0:
+        reasons.append(
+            "Sau khi chạy lại toàn bộ ràng buộc, nghiệm tối ưu vẫn giống phương án cũ. "
+            "Đây là kết quả “không cần đổi danh mục”, không phải hệ thống bỏ qua yêu cầu."
+        )
+    else:
+        reasons.append(
+            f"Optimizer đã đổi {allocation_change_count} khoản vì tổ hợp cũ không còn "
+            "là nghiệm tốt nhất dưới hồ sơ mới."
+        )
+    return _bounded_text(
+        reasons,
+        "Hệ thống đã chạy lại các ràng buộc nhưng chưa xác định được động lực thay đổi.",
+    )
+
+
+def build_replanning_explanation(
+    reply: ChatResponse,
+    *,
+    original: PlanningRequest,
+    revised: PlanningRequest,
+    before_output: ReleasedOutput | None,
+    after_output: ReleasedOutput,
+    active_scenario_id: str | None,
+) -> ChatResponse:
+    """Replace a generic replan acknowledgement with an auditable before/after memo."""
+
+    if before_output is None:
+        return reply
+    before = _scenario(before_output, active_scenario_id)
+    after = _same_style_scenario(after_output, before)
+    if before is None or after is None:
+        return reply
+
+    product_level = (
+        before.allocation_granularity == "PRODUCT"
+        and after.allocation_granularity == "PRODUCT"
+    )
+    allocation_text, allocation_change_count = _allocation_change_text(
+        before,
+        after,
+        product_level=product_level,
+    )
+    before_plan = before_output.financial_plan
+    after_plan = after_output.financial_plan
+    plan_text = _profile_change_text(original, revised)
+    if before_plan and after_plan:
+        plan_text += (
+            f" Vốn có thể đầu tư {_money(before_plan.investable_capital)} → "
+            f"{_money(after_plan.investable_capital)}; bucket thanh khoản tức thời "
+            f"{_money(before_plan.immediate_liquidity_bucket)} → "
+            f"{_money(after_plan.immediate_liquidity_bucket)}."
+        )
+
+    reason_text = _replanning_reason_text(
+        original,
+        revised,
+        before_output,
+        after_output,
+        allocation_change_count,
+    )
+    metric_text = (
+        f"Lợi nhuận kỳ vọng {_pct(before.expected_return_rate)} "
+        f"({_money(before.expected_return_amount)}/năm) → "
+        f"{_pct(after.expected_return_rate)} "
+        f"({_money(after.expected_return_amount)}/năm). "
+        f"Biến động {_pct(before.risk_metrics.annualized_volatility)} → "
+        f"{_pct(after.risk_metrics.annualized_volatility)}; VaR 95% "
+        f"{_money(before.risk_metrics.var_95_amount)} → "
+        f"{_money(after.risk_metrics.var_95_amount)}; thanh khoản "
+        f"{before.risk_metrics.liquidity_score:.1f}/100 → "
+        f"{after.risk_metrics.liquidity_score:.1f}/100; chi phí "
+        f"{_money(before.total_cost_amount)} → {_money(after.total_cost_amount)}."
+    )
+
+    action_parts: list[str] = []
+    if reply.intent == "WITHDRAWAL_NEED":
+        for option in sorted(
+            before.withdrawal_options,
+            key=lambda item: item.priority,
+        )[:3]:
+            action_parts.append(
+                f"Ưu tiên {option.priority} — {option.title}: khả dụng "
+                f"{_money(option.available_amount)}; chi phí/giá trị mất đi: "
+                f"{option.estimated_cost.rstrip('.; ')}; ảnh hưởng phần còn lại: "
+                f"{option.portfolio_impact.rstrip('.; ')}."
+            )
+    action_text = _bounded_text(
+        action_parts,
+        (
+            "Chưa cần giao dịch nếu thay đổi chỉ là mô phỏng. Hãy xác nhận số tiền, "
+            "thời điểm và việc đây là nhu cầu mới hay khoản bổ sung trước khi thực hiện."
+        ),
+    )
+    if reply.intent == "WITHDRAWAL_NEED":
+        action_text += (
+            " Đây mới là phân tích phương án rút vốn; hệ thống không tự động bán hoặc "
+            "tất toán tài sản."
+        )
+        if revised.profile.liquidity_need < original.profile.liquidity_need:
+            action_text += (
+                f" Lưu ý: hệ thống đang hiểu {_money(revised.profile.liquidity_need)} "
+                f"là mức nhu cầu mới thay cho {_money(original.profile.liquidity_need)}. "
+                "Nếu đây là khoản rút thêm ngoài nhu cầu cũ, cần nói rõ “rút thêm” để "
+                "không nới sai ràng buộc thanh khoản."
+            )
+
+    if allocation_change_count:
+        headline = (
+            f"Đã chạy lại phương án “{before.name}” và có "
+            f"{allocation_change_count} khoản phân bổ thay đổi."
+        )
+    else:
+        headline = (
+            f"Đã chạy lại phương án “{before.name}”, nhưng danh mục không đổi. "
+            "Yêu cầu mới chưa làm thay đổi nghiệm tối ưu."
+        )
+    compact_message = _bounded_text(
+        [
+            headline,
+            plan_text,
+            reason_text,
+            metric_text,
+        ],
+        headline,
+        limit=1_150,
+    )
+    reply.message = compact_message
+    reply.sections = [
+        ChatAnswerSection(
+            title="1. Hồ sơ và dòng tiền đã thay đổi gì?",
+            body=plan_text,
+        ),
+        ChatAnswerSection(
+            title="2. Vì sao hệ thống điều chỉnh như vậy?",
+            body=reason_text,
+        ),
+        ChatAnswerSection(
+            title=(
+                "3. Sản phẩm thay đổi cụ thể"
+                if product_level
+                else "3. Nhóm tài sản thay đổi cụ thể"
+            ),
+            body=allocation_text,
+        ),
+        ChatAnswerSection(
+            title="4. Tác động đến lợi nhuận, rủi ro và thanh khoản",
+            body=metric_text,
+        ),
+        ChatAnswerSection(
+            title="5. Cách xử lý và việc cần xác nhận",
+            body=action_text,
+        ),
+    ]
+    reply.suggested_questions = [
+        "Nếu đây là khoản rút thêm ngoài nhu cầu cũ thì sao?",
+        "Khoản nào nên bán hoặc tất toán trước?",
+        "So sánh cả 3 phương án trước và sau",
+    ]
+    reply.focused_scenario_id = after.scenario_id
+    return reply
+
+
+def _recent_replanning_context(
+    conversation_history: list[dict[str, str]],
+) -> str | None:
+    for turn in reversed(conversation_history):
+        if turn.get("role") != "assistant":
+            continue
+        content = turn.get("content", "")
+        if "[PORTFOLIO_CHANGE]" in content:
+            return content.replace("[PORTFOLIO_CHANGE]", "").strip()
+    return None
+
+
 def _gold_question(message: str) -> bool:
     normalized = _normalize(message)
     return any(
@@ -1721,6 +2065,50 @@ def interpret_follow_up(
                 ],
             ),
             revised,
+        )
+
+    asks_about_recent_change = any(
+        token in normalized
+        for token in [
+            "da thay doi gi",
+            "thay doi nhung gi",
+            "khac gi so voi truoc",
+            "so sanh ket qua moi voi ket qua cu",
+            "vi sao lai thay doi",
+            "tai sao lai thay doi",
+        ]
+    )
+    recent_change = (
+        _recent_replanning_context(history)
+        if asks_about_recent_change
+        else None
+    )
+    if recent_change:
+        return (
+            ChatResponse(
+                recommendation_id="",
+                intent="EXPLAIN_REPLANNING_CHANGE",
+                message=(
+                    "Đây là bản đối chiếu trước–sau của lần tính lại gần nhất; "
+                    "không có số liệu nào được suy đoán thêm."
+                ),
+                replanning_required=False,
+                sections=[
+                    ChatAnswerSection(
+                        title="Thay đổi gần nhất và nguyên nhân",
+                        body=_bounded_text(
+                            [recent_change],
+                            "Chưa có bản đối chiếu gần nhất.",
+                        ),
+                    )
+                ],
+                suggested_questions=[
+                    "Khoản nào nên bán hoặc tất toán trước?",
+                    "Nếu đây là khoản rút thêm ngoài nhu cầu cũ thì sao?",
+                ],
+                generated_by="DATA_REGISTRY",
+            ),
+            None,
         )
 
     memo_scenario = (

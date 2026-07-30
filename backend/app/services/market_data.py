@@ -46,6 +46,11 @@ from backend.app.models import (
 logger = logging.getLogger("monopoly.market_data")
 VIETNAM_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 USER_AGENT = "MonopolyAI-DelayedData/2.0 (+local research system)"
+PNJ_GOLD_SOURCE_ID = "PNJ_GOLD"
+PNJ_GOLD_PAGE_URL = "https://www.pnj.com.vn/giavang/index.html?zone=00"
+PNJ_GOLD_API_URL = (
+    "https://edge-api.pnj.io/ecom-frontend/v1/get-gold-price?zone=00"
+)
 
 
 @dataclass
@@ -106,8 +111,9 @@ def _gold_product(
         provider=provider,
         product_name=product_name,
         source_reference=(
-            f"{source_url} — giá mua/bán chính thức; lợi nhuận kỳ vọng và "
-            "biến động vẫn là giả định mô hình."
+            f"{source_url} — bảng giá vàng chính thức PNJ, đơn vị công bố "
+            "1.000 VND/chỉ; dữ liệu máy đọc từ API PNJ. Lợi nhuận kỳ vọng "
+            "và biến động vẫn là giả định mô hình."
         ),
         data_timestamp=timestamp,
         buy_price=buy_price,
@@ -132,22 +138,44 @@ def _gold_product(
         qualifying_balance_scope=QualifyingBalanceScope.PER_CONTRACT,
         rounding_rule=RoundingRule.WHOLE_UNIT,
         repricing_required=True,
-        source_registry_id="PNJ_OFFICIAL_DELAYED_GOLD",
+        source_registry_id=PNJ_GOLD_SOURCE_ID,
         rights_status=RightsStatus.APPROVED,
         value_provenance=ValueProvenance.OFFICIAL_API,
         verification_status=VerificationStatus.PARTIALLY_VERIFIED,
     )
 
 
-def fetch_pnj_gold() -> ConnectorResult:
-    source_url = "https://edge-api.pnj.io/ecom-frontend/v1/get-gold-price?zone=00"
-    with _client() as client:
-        response = client.get(source_url)
-        response.raise_for_status()
-        payload = response.json()
-    observed_at = _parse_vietnam_datetime(payload["updateDate"])
+def _validated_pnj_price(row: dict[str, Any], field_name: str) -> float:
+    raw_value = row.get(field_name)
+    if raw_value in {None, ""}:
+        raise ValueError(
+            f"PNJ quote {row.get('masp', 'UNKNOWN')} is missing {field_name}"
+        )
+    try:
+        price_per_chi = float(raw_value) * 1_000
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"PNJ quote {row.get('masp', 'UNKNOWN')} has invalid {field_name}"
+        ) from exc
+    if not 1_000_000 <= price_per_chi <= 100_000_000:
+        raise ValueError(
+            f"PNJ quote {row.get('masp', 'UNKNOWN')} has implausible "
+            f"{field_name} after converting 1.000 VND/chi"
+        )
+    return price_per_chi
+
+
+def _pnj_gold_result_from_payload(payload: dict[str, Any]) -> ConnectorResult:
+    try:
+        observed_at = _parse_vietnam_datetime(str(payload["updateDate"]))
+        payload_rows = payload["data"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("PNJ response has an invalid data contract") from exc
+    if not isinstance(payload_rows, list):
+        raise ValueError("PNJ response data must be a list")
+
     wanted = {"SJC", "N24K"}
-    rows = [row for row in payload["data"] if row.get("masp") in wanted]
+    rows = [row for row in payload_rows if row.get("masp") in wanted]
     if len(rows) != len(wanted):
         raise ValueError("PNJ response is missing required SJC/N24K quotes")
 
@@ -155,8 +183,14 @@ def fetch_pnj_gold() -> ConnectorResult:
     products: list[AssetProduct] = []
     for row in rows:
         code = row["masp"]
-        buy_per_chi = float(row["giaban"]) * 1_000
-        sell_per_chi = float(row["giamua"]) * 1_000
+        buy_per_chi = _validated_pnj_price(row, "giaban")
+        sell_per_chi = _validated_pnj_price(row, "giamua")
+        if buy_per_chi < sell_per_chi:
+            raise ValueError(
+                f"PNJ quote {code} has customer buy price below sell-back price"
+            )
+        if (buy_per_chi - sell_per_chi) / buy_per_chi > 0.20:
+            raise ValueError(f"PNJ quote {code} has an implausible bid-ask spread")
         observations.extend(
             [
                 {
@@ -187,7 +221,7 @@ def fetch_pnj_gold() -> ConnectorResult:
                     sell_price=sell_per_chi * 10,
                     minimum_investment=buy_per_chi * 10,
                     timestamp=observed_at,
-                    source_url=source_url,
+                    source_url=PNJ_GOLD_PAGE_URL,
                 )
             )
         else:
@@ -200,21 +234,34 @@ def fetch_pnj_gold() -> ConnectorResult:
                     sell_price=sell_per_chi,
                     minimum_investment=buy_per_chi,
                     timestamp=observed_at,
-                    source_url=source_url,
+                    source_url=PNJ_GOLD_PAGE_URL,
                 )
             )
     return ConnectorResult(
-        source_id="PNJ_GOLD",
+        source_id=PNJ_GOLD_SOURCE_ID,
         display_name="PNJ — Giá vàng",
         category="GOLD",
-        source_url=source_url,
+        source_url=PNJ_GOLD_PAGE_URL,
         cadence="Theo ngày",
         stale_after_seconds=3 * 24 * 3600,
         observed_at=observed_at,
         observations=observations,
         products=products,
-        metadata={"branch": payload.get("chinhanh"), "official": True},
+        metadata={
+            "branch": payload.get("chinhanh"),
+            "official": True,
+            "api_url": PNJ_GOLD_API_URL,
+            "quote_unit": "1.000 VND/chi",
+        },
     )
+
+
+def fetch_pnj_gold() -> ConnectorResult:
+    with _client() as client:
+        response = client.get(PNJ_GOLD_API_URL)
+        response.raise_for_status()
+        payload = response.json()
+    return _pnj_gold_result_from_payload(payload)
 
 
 def _deposit_product(
@@ -1039,7 +1086,7 @@ def _source_defaults(source_id: str) -> dict[str, Any]:
         "PNJ_GOLD": {
             "display_name": "PNJ — Giá vàng",
             "category": "GOLD",
-            "source_url": "https://edge-api.pnj.io/ecom-frontend/v1/get-gold-price?zone=00",
+            "source_url": PNJ_GOLD_PAGE_URL,
             "cadence": "Theo ngày",
             "stale_after_seconds": 3 * 24 * 3600,
         },

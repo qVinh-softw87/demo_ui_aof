@@ -256,7 +256,7 @@ type ChatResponse = {
 type Health = {
   status: string;
   llm_status: "connected" | "fallback";
-  llm_provider: "groq" | "openai" | "deterministic";
+  llm_provider: "groq" | "openai" | "ollama" | "deterministic";
   llm_model: string;
   environment: string;
   auth_required: boolean;
@@ -483,6 +483,23 @@ const dataModeLabel = (mode?: Health["data_status"]) =>
       : "DỮ LIỆU MÔ PHỎNG";
 
 const uid = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+const messageForHistory = (message: Message) => {
+  const isReplanningMemo = (message.sections || []).some((section) =>
+    section.title.startsWith("1. Hồ sơ và dòng tiền")
+  );
+  const historyText = [
+    ...(isReplanningMemo ? ["[PORTFOLIO_CHANGE]"] : []),
+    message.text,
+    ...(message.sections || []).map(
+      (section) => `${section.title}: ${section.body}`
+    )
+  ].join("\n");
+  if (historyText.length <= 1200) return historyText;
+  const clipped = historyText.slice(0, 1199);
+  const lastWordBoundary = clipped.lastIndexOf(" ");
+  return `${clipped.slice(0, Math.max(lastWordBoundary, 0))}…`;
+};
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const accessToken = localStorage.getItem("monopoly_access_token");
@@ -914,7 +931,7 @@ function App() {
           message: text,
           conversation_history: messages.slice(-8).map((item) => ({
             role: item.role,
-            content: item.text
+            content: messageForHistory(item)
           }))
         })
       });
@@ -929,19 +946,23 @@ function App() {
         }
       ]);
       setSuggestions(result.suggested_questions || []);
-      if (result.focused_scenario_id && recommendation) {
-        const focusedIndex = recommendation.released_output.scenarios.findIndex(
-          (item) => item.scenario_id === result.focused_scenario_id
-        );
-        if (focusedIndex >= 0) setActiveScenario(focusedIndex);
-      }
       if (result.replanned_recommendation) {
         setRecommendation(result.replanned_recommendation);
-        setActiveScenario(0);
+        const focusedIndex = result.focused_scenario_id
+          ? result.replanned_recommendation.released_output.scenarios.findIndex(
+              (item) => item.scenario_id === result.focused_scenario_id
+            )
+          : -1;
+        setActiveScenario(focusedIndex >= 0 ? focusedIndex : 0);
         setRequest((current) => ({
           ...current,
           profile: { ...current.profile, ...result.proposed_profile_changes }
         }));
+      } else if (result.focused_scenario_id && recommendation) {
+        const focusedIndex = recommendation.released_output.scenarios.findIndex(
+          (item) => item.scenario_id === result.focused_scenario_id
+        );
+        if (focusedIndex >= 0) setActiveScenario(focusedIndex);
       }
     } catch (cause) {
       setMessages((current) => [
@@ -2004,6 +2025,8 @@ function App() {
                     <small className="generated-label">
                       {message.generatedBy === "GROQ_STRUCTURED_OUTPUT"
                         ? "Hội thoại bởi Groq · không tự tính số liệu"
+                        : message.generatedBy === "OLLAMA_STRUCTURED_OUTPUT"
+                          ? "Hội thoại bởi Ollama · không tự tính số liệu"
                         : message.generatedBy === "OPENAI_STRUCTURED_OUTPUT"
                           ? "Hội thoại bởi OpenAI · không tự tính số liệu"
                           : message.generatedBy === "DATA_REGISTRY"

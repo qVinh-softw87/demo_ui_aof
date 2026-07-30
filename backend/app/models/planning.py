@@ -476,6 +476,7 @@ class ExplanationPayload(BaseModel):
     generated_by: Literal[
         "OPENAI_STRUCTURED_OUTPUT",
         "GROQ_STRUCTURED_OUTPUT",
+        "OLLAMA_STRUCTURED_OUTPUT",
         "DETERMINISTIC_FALLBACK",
     ] = "DETERMINISTIC_FALLBACK"
 
@@ -528,6 +529,7 @@ class ChatResponse(BaseModel):
     generated_by: Literal[
         "OPENAI_STRUCTURED_OUTPUT",
         "GROQ_STRUCTURED_OUTPUT",
+        "OLLAMA_STRUCTURED_OUTPUT",
         "DETERMINISTIC_FALLBACK",
         "DATA_REGISTRY",
     ] = "DETERMINISTIC_FALLBACK"

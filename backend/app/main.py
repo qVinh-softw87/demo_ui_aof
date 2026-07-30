@@ -54,7 +54,11 @@ from backend.app.models import (
     ReleasedOutput,
     UserFinancialProfile,
 )
-from backend.app.services.chat import interpret_follow_up, resolve_scenario_id
+from backend.app.services.chat import (
+    build_replanning_explanation,
+    interpret_follow_up,
+    resolve_scenario_id,
+)
 from backend.app.services.compliance import apply_output_policy
 from backend.app.services.deposit_comparison import (
     SUPPORTED_SEGMENTS,
@@ -553,13 +557,25 @@ def chat(
         for turn in request.conversation_history
     ]
     if not conversation_history and request.recommendation_id:
-        conversation_history = [
-            {
-                "role": row["role"],
-                "content": row["content"],
-            }
-            for row in list_chat_messages(request.recommendation_id)[-8:]
-        ]
+        conversation_history = []
+        for row in list_chat_messages(request.recommendation_id)[-8:]:
+            content = row["content"]
+            metadata = row.get("metadata") or {}
+            sections = metadata.get("sections") or []
+            if metadata.get("intent") in {"ADD_CAPITAL", "WITHDRAWAL_NEED"}:
+                content = "[PORTFOLIO_CHANGE]\n" + content
+            if sections:
+                content += "\n" + "\n".join(
+                    f"{section['title']}: {section['body']}"
+                    for section in sections
+                    if section.get("title") and section.get("body")
+                )
+            conversation_history.append(
+                {
+                    "role": row["role"],
+                    "content": content,
+                }
+            )
     focused_scenario_id = (
         resolve_scenario_id(
             released,
@@ -584,6 +600,14 @@ def chat(
         reply.replanned_recommendation = replanned
         reply.recommendation_id = replanned.released_output.recommendation_id
         message_recommendation_id = replanned.released_output.recommendation_id
+        reply = build_replanning_explanation(
+            reply,
+            original=original,
+            revised=revised,
+            before_output=released,
+            after_output=replanned.released_output,
+            active_scenario_id=focused_scenario_id,
+        )
         reply.message += (
             f" Mã phương án mới: {replanned.released_output.recommendation_id}."
         )

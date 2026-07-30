@@ -13,7 +13,11 @@ from backend.app.models import (
     PlanningRequest,
     SelectionStatus,
 )
-from backend.app.services.chat import interpret_follow_up, resolve_scenario_id
+from backend.app.services.chat import (
+    build_replanning_explanation,
+    interpret_follow_up,
+    resolve_scenario_id,
+)
 from backend.app.services.orchestrator import run_planning_pipeline
 from backend.app.services.reports import generate_recommendation_pdf
 
@@ -180,6 +184,148 @@ def test_follow_up_cash_flow_is_parsed_and_replanned() -> None:
     assert revised is not None
     assert revised.profile.liquidity_need == 20_000_000
     assert revised.profile.liquidity_need_months == 3
+
+
+def test_replan_explains_before_after_and_follow_up_change_question() -> None:
+    request = default_planning_request()
+    request = request.model_copy(
+        update={
+            "profile": request.profile.model_copy(
+                update={
+                    "liquidity_need": 60_000_000,
+                    "liquidity_need_months": 6,
+                }
+            )
+        }
+    )
+    before, _ = run_planning_pipeline(request, persist=False)
+    active = before.released_output.scenarios[0]
+    reply, revised = interpret_follow_up(
+        request,
+        "Tôi cần rút 20 triệu",
+        before.released_output,
+        active.scenario_id,
+    )
+    assert revised is not None
+
+    after, _ = run_planning_pipeline(revised, persist=False)
+    reply.replanned_recommendation = after
+    reply = build_replanning_explanation(
+        reply,
+        original=request,
+        revised=revised,
+        before_output=before.released_output,
+        after_output=after.released_output,
+        active_scenario_id=active.scenario_id,
+    )
+
+    assert reply.focused_scenario_id
+    assert len(reply.sections) == 5
+    assert "[PORTFOLIO_CHANGE]" not in reply.message
+    assert "60.000.000 VND" in reply.sections[0].body
+    assert "20.000.000 VND" in reply.sections[0].body
+    assert "nghiệm tối ưu vẫn giống phương án cũ" in reply.sections[1].body
+    assert "Không có khoản phân bổ nào thay đổi" in reply.sections[2].body
+    assert "Lưu ý: hệ thống đang hiểu" in reply.sections[4].body
+
+    history_content = "\n".join(
+        ["[PORTFOLIO_CHANGE]", reply.message]
+        + [f"{section.title}: {section.body}" for section in reply.sections]
+    )[:1_200]
+    follow_up, follow_up_revised = interpret_follow_up(
+        revised,
+        "Đã thay đổi gì so với trước?",
+        after.released_output,
+        reply.focused_scenario_id,
+        [{"role": "assistant", "content": history_content}],
+    )
+
+    assert follow_up_revised is None
+    assert follow_up.intent == "EXPLAIN_REPLANNING_CHANGE"
+    assert "danh mục không đổi" in follow_up.sections[0].body
+    assert "60.000.000 VND" in follow_up.sections[0].body
+
+
+def test_advisor_replan_names_changed_products_not_only_asset_classes() -> None:
+    payload = default_planning_request().model_dump()
+    payload["requested_mode"] = LegalOperatingMode.LICENSED_ADVISORY
+    payload["legal_evidence"] = {
+        "licensed_entity_verified": True,
+        "advisory_contract_verified": True,
+        "responsible_advisor_verified": True,
+    }
+    request = PlanningRequest.model_validate(payload)
+    before, _ = run_planning_pipeline(request, persist=False)
+    active = before.released_output.scenarios[1]
+    reply, revised = interpret_follow_up(
+        request,
+        "Nạp thêm 50 triệu",
+        before.released_output,
+        active.scenario_id,
+    )
+    assert revised is not None
+
+    after, _ = run_planning_pipeline(revised, persist=False)
+    reply = build_replanning_explanation(
+        reply,
+        original=request,
+        revised=revised,
+        before_output=before.released_output,
+        after_output=after.released_output,
+        active_scenario_id=active.scenario_id,
+    )
+
+    assert reply.sections[2].title == "3. Sản phẩm thay đổi cụ thể"
+    assert any(
+        allocation.product_name in reply.sections[2].body
+        for allocation in active.allocations
+    )
+    assert "50.000.000 VND" in reply.sections[0].body
+
+
+def test_chat_api_returns_replanning_memo_instead_of_generic_acknowledgement() -> None:
+    async def exercise_api() -> None:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            planned = await client.post(
+                "/api/v1/recommendations",
+                json=default_planning_request().model_dump(mode="json"),
+            )
+            assert planned.status_code == 200, planned.text
+            released = planned.json()["released_output"]
+
+            replanned = await client.post(
+                "/api/v1/chat",
+                json={
+                    "recommendation_id": released["recommendation_id"],
+                    "active_scenario_id": released["scenarios"][0]["scenario_id"],
+                    "message": "Tôi cần rút 20 triệu",
+                    "conversation_history": [],
+                },
+            )
+            assert replanned.status_code == 200, replanned.text
+            payload = replanned.json()
+            assert payload["replanning_required"]
+            assert payload["replanned_recommendation"]
+            assert len(payload["sections"]) == 5
+            assert "danh mục không đổi" in payload["message"]
+            assert payload["focused_scenario_id"] != released["scenarios"][0]["scenario_id"]
+
+            follow_up = await client.post(
+                "/api/v1/chat",
+                json={
+                    "recommendation_id": payload["recommendation_id"],
+                    "active_scenario_id": payload["focused_scenario_id"],
+                    "message": "Đã thay đổi gì?",
+                    "conversation_history": [],
+                },
+            )
+            assert follow_up.status_code == 200, follow_up.text
+            follow_up_payload = follow_up.json()
+            assert follow_up_payload["intent"] == "EXPLAIN_REPLANNING_CHANGE"
+            assert "danh mục không đổi" in follow_up_payload["sections"][0]["body"]
+
+    asyncio.run(exercise_api())
 
 
 def test_chat_explains_active_scenario_with_structured_evidence() -> None:

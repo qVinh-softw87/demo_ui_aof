@@ -45,6 +45,12 @@ class Settings:
         self.openai_model = os.getenv("OPENAI_MODEL", "gpt-5.6-sol")
         self.groq_api_key = os.getenv("GROQ_API_KEY")
         self.groq_model = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+        self.ollama_api_key = os.getenv("OLLAMA_API_KEY")
+        self.ollama_model = os.getenv("OLLAMA_MODEL", "gpt-oss:120b")
+        self.ollama_base_url = os.getenv(
+            "OLLAMA_BASE_URL",
+            "https://ollama.com/api",
+        ).rstrip("/")
         self.llm_provider = os.getenv("LLM_PROVIDER", "auto").strip().lower()
         self.environment = os.getenv("AQ_ENV", "development").strip().lower()
         self.auth_required = os.getenv("AQ_AUTH_REQUIRED", "false").lower() == "true"
@@ -115,6 +121,10 @@ class Settings:
             return "groq" if self.groq_api_key else "deterministic"
         if self.llm_provider == "openai":
             return "openai" if self.openai_api_key else "deterministic"
+        if self.llm_provider == "ollama":
+            return "ollama" if self.ollama_api_key else "deterministic"
+        if self.ollama_api_key:
+            return "ollama"
         if self.groq_api_key:
             return "groq"
         if self.openai_api_key:
@@ -127,6 +137,8 @@ class Settings:
             return self.groq_model
         if self.active_llm_provider == "openai":
             return self.openai_model
+        if self.active_llm_provider == "ollama":
+            return self.ollama_model
         return "deterministic-rules"
 
     @property
