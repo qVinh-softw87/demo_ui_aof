@@ -545,8 +545,11 @@ function NumberField({
           type="number"
           min={0}
           step={1_000_000}
-          value={value}
-          onChange={(event) => onChange(Number(event.target.value))}
+          value={value.toString()}
+          onChange={(event) => {
+            const val = event.target.value;
+            onChange(val === "" ? 0 : Number(val));
+          }}
         />
         <em>VND</em>
       </div>
