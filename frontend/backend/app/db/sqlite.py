@@ -1,90 +1,34 @@
 from __future__ import annotations
 
 import json
-import os
+import sqlite3
 from pathlib import Path
-import psycopg2
-from psycopg2.extras import RealDictCursor
 
 from backend.app.core.config import get_settings
 from backend.app.models import AssetProduct
 
-class PostgresConnectionWrapper:
-    def __init__(self, conn):
-        self.conn = conn
 
-    def _prepare(self, query: str) -> str:
-        q = query.replace("?", "%s")
-        q = q.replace("datetime('now')", "CURRENT_TIMESTAMP")
-        return q
+def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
+    settings = get_settings()
+    resolved_path = db_path or settings.db_path
+    resolved_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(resolved_path, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 30000")
+    return conn
 
-    def execute(self, query: str, params=None):
-        query = self._prepare(query)
-        cursor = self.conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute(query, params)
-        return cursor
-
-    def executemany(self, query: str, params_list):
-        query = self._prepare(query)
-        cursor = self.conn.cursor()
-        cursor.executemany(query, params_list)
-        return cursor
-
-    def executescript(self, script: str):
-        script = self._prepare(script)
-        cursor = self.conn.cursor()
-        cursor.execute(script)
-
-    def commit(self):
-        self.conn.commit()
-
-    def rollback(self):
-        self.conn.rollback()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type:
-            self.conn.rollback()
-        else:
-            self.conn.commit()
-        self.conn.close()
-
-def get_connection(db_path: Path | None = None) -> PostgresConnectionWrapper:
-    database_url = os.environ.get("DATABASE_URL")
-    if not database_url:
-        raise ValueError("DATABASE_URL environment variable is required for PostgreSQL")
-
-    database_url = database_url.strip()
-    if database_url.startswith("DATABASE_URL="):
-        database_url = database_url[len("DATABASE_URL="):]
-    database_url = database_url.strip('"').strip("'")
-
-    # Auto-fix unencoded special characters in the password
-    import re
-    from urllib.parse import unquote, quote
-    match = re.match(r"(postgresql://[^:]+:)([^@]+)(@.*)", database_url)
-    if match:
-        safe_password = quote(unquote(match.group(2)))
-        database_url = match.group(1) + safe_password + match.group(3)
-
-    # Remove unsupported libpq parameter
-    database_url = database_url.replace("?pgbouncer=true", "").replace("&pgbouncer=true", "")
-
-    conn = psycopg2.connect(database_url)
-    conn.autocommit = False
-    return PostgresConnectionWrapper(conn)
 
 def initialize_database(db_path: Path | None = None) -> None:
     settings = get_settings()
     migrations_dir = settings.project_root / "backend" / "migrations"
     with get_connection(db_path) as conn:
+        conn.execute("PRAGMA journal_mode = WAL")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS schema_migrations (
                 migration_name TEXT PRIMARY KEY,
-                applied_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
             """
         )
@@ -99,10 +43,11 @@ def initialize_database(db_path: Path | None = None) -> None:
                 continue
             conn.executescript(migration.read_text(encoding="utf-8"))
             conn.execute(
-                "INSERT INTO schema_migrations (migration_name) VALUES (%s)",
+                "INSERT INTO schema_migrations (migration_name) VALUES (?)",
                 (migration.name,),
             )
         conn.commit()
+
 
 def upsert_asset_products(products: list[AssetProduct], db_path: Path | None = None) -> int:
     initialize_database(db_path)
@@ -114,19 +59,19 @@ def upsert_asset_products(products: list[AssetProduct], db_path: Path | None = N
                 source_reference, data_timestamp, rights_status, value_provenance,
                 verification_status, payload_json
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (product_id) DO UPDATE SET
-                asset_class=EXCLUDED.asset_class,
-                provider=EXCLUDED.provider,
-                product_name=EXCLUDED.product_name,
-                source_registry_id=EXCLUDED.source_registry_id,
-                source_reference=EXCLUDED.source_reference,
-                data_timestamp=EXCLUDED.data_timestamp,
-                rights_status=EXCLUDED.rights_status,
-                value_provenance=EXCLUDED.value_provenance,
-                verification_status=EXCLUDED.verification_status,
-                payload_json=EXCLUDED.payload_json,
-                updated_at=CURRENT_TIMESTAMP
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(product_id) DO UPDATE SET
+                asset_class=excluded.asset_class,
+                provider=excluded.provider,
+                product_name=excluded.product_name,
+                source_registry_id=excluded.source_registry_id,
+                source_reference=excluded.source_reference,
+                data_timestamp=excluded.data_timestamp,
+                rights_status=excluded.rights_status,
+                value_provenance=excluded.value_provenance,
+                verification_status=excluded.verification_status,
+                payload_json=excluded.payload_json,
+                updated_at=datetime('now')
             """,
             [
                 (
@@ -148,6 +93,7 @@ def upsert_asset_products(products: list[AssetProduct], db_path: Path | None = N
         conn.commit()
     return len(products)
 
+
 def fetch_asset_products(
     *,
     asset_class: str | None = None,
@@ -158,7 +104,7 @@ def fetch_asset_products(
     filters: list[str] = []
     params: list[str] = []
     if asset_class:
-        filters.append("asset_class = %s")
+        filters.append("asset_class = ?")
         params.append(asset_class)
     if approved_only:
         filters.append("rights_status = 'APPROVED'")
@@ -168,47 +114,49 @@ def fetch_asset_products(
 
     with get_connection(db_path) as conn:
         rows = conn.execute(query, params).fetchall()
-    return [row["payload_json"] if isinstance(row["payload_json"], dict) else json.loads(row["payload_json"]) for row in rows]
+    return [json.loads(row["payload_json"]) for row in rows]
+
 
 def fetch_asset_product(product_id: str, db_path: Path | None = None) -> dict | None:
     initialize_database(db_path)
     with get_connection(db_path) as conn:
         row = conn.execute(
-            "SELECT payload_json FROM asset_products WHERE product_id = %s",
+            "SELECT payload_json FROM asset_products WHERE product_id = ?",
             (product_id,),
         ).fetchone()
-    if not row:
-        return None
-    return row["payload_json"] if isinstance(row["payload_json"], dict) else json.loads(row["payload_json"])
+    return json.loads(row["payload_json"]) if row else None
+
 
 def restrict_mock_products(
     asset_classes: set[str],
     db_path: Path | None = None,
 ) -> int:
+    """Keep mock rows for audit while excluding replaced classes from optimization."""
+
     if not asset_classes:
         return 0
     initialize_database(db_path)
-    placeholders = ",".join("%s" for _ in asset_classes)
+    placeholders = ",".join("?" for _ in asset_classes)
     with get_connection(db_path) as conn:
         rows = conn.execute(
             f"""
             SELECT product_id, payload_json
             FROM asset_products
-            WHERE source_registry_id LIKE 'MOCK%%'
+            WHERE source_registry_id LIKE 'MOCK%'
               AND asset_class IN ({placeholders})
             """,
             tuple(sorted(asset_classes)),
         ).fetchall()
         for row in rows:
-            payload = row["payload_json"] if isinstance(row["payload_json"], dict) else json.loads(row["payload_json"])
+            payload = json.loads(row["payload_json"])
             payload["rights_status"] = "RESTRICTED"
             conn.execute(
                 """
                 UPDATE asset_products
                 SET rights_status = 'RESTRICTED',
-                    payload_json = %s,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE product_id = %s
+                    payload_json = ?,
+                    updated_at = datetime('now')
+                WHERE product_id = ?
                 """,
                 (
                     json.dumps(payload, ensure_ascii=False, default=str),
@@ -218,14 +166,17 @@ def restrict_mock_products(
         conn.commit()
     return len(rows)
 
+
 def restrict_products_by_source(
     source_registry_ids: set[str],
     db_path: Path | None = None,
 ) -> int:
+    """Retain superseded products for audit while removing them from optimization."""
+
     if not source_registry_ids:
         return 0
     initialize_database(db_path)
-    placeholders = ",".join("%s" for _ in source_registry_ids)
+    placeholders = ",".join("?" for _ in source_registry_ids)
     with get_connection(db_path) as conn:
         rows = conn.execute(
             f"""
@@ -236,15 +187,15 @@ def restrict_products_by_source(
             tuple(sorted(source_registry_ids)),
         ).fetchall()
         for row in rows:
-            payload = row["payload_json"] if isinstance(row["payload_json"], dict) else json.loads(row["payload_json"])
+            payload = json.loads(row["payload_json"])
             payload["rights_status"] = "RESTRICTED"
             conn.execute(
                 """
                 UPDATE asset_products
                 SET rights_status = 'RESTRICTED',
-                    payload_json = %s,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE product_id = %s
+                    payload_json = ?,
+                    updated_at = datetime('now')
+                WHERE product_id = ?
                 """,
                 (
                     json.dumps(payload, ensure_ascii=False, default=str),
